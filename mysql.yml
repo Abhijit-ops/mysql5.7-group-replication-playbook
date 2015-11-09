@@ -8,9 +8,12 @@
     - dbpassword: suzuki
   tasks:
 
+    #
+    # hostnameを使用する（ログファイルにhostnameを使用するため）
+    #
     - name: change hostname
       shell: |
-        sed -i -e 's/\(HOSTNAME=\).*/\1db{{ ansible_eth1["ipv4"]["address"][-1:] }}.local/g' /etc/sysconfig/network
+        sed -i -e 's/\(HOSTNAME=\).*/\1db{{ ansible_eth1["ipv4"]["address"][-1:] }}.local.net/g' /etc/sysconfig/network
         hostname db{{ ansible_eth1["ipv4"]["address"][-1:] }}.local.net
       tags: init
 
