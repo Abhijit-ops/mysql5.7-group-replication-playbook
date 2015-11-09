@@ -6,6 +6,9 @@
     - dbname: sample
     - dbuser: suzuki
     - dbpassword: suzuki
+    - host_items:
+      - '10.11.22.101\tdb1.local.net'
+      - '10.11.22.102\tdb2.local.net'
   tasks:
 
     #
@@ -25,9 +28,7 @@
       shell: |
         sed -i '/^{{ item }}$/d' /etc/hosts
         echo -e '{{ item }}' >> /etc/hosts
-      with_items:
-        - '10.11.22.101\tdb1.local.net'
-        - '10.11.22.102\tdb2.local.net'
+      with_items: host_items
       tags: init
 
     # MySQLリポジトリの追加
@@ -54,7 +55,7 @@
     #
     # 初期化コマンド「mysql_install_db」はprovisioning toolで実行するのは
     # リスクを伴うため、あえて実行しない。（「~/.mysql_secret」が出力されない。）
-    # その代わり設定ファイルの変更なしで、一旦起動させパスワードをる。
+    # その代わり設定ファイルの変更なしで、一旦起動させパスワードを確認する。
     #
 
     # 起動＆サービス登録
@@ -62,39 +63,6 @@
       service: name=mysqld state=running enabled=yes
       tags: mysqld
 
-    #
-    # ここからデフォルト以外の初期設定
-    #
-
-    # [Group Replication] installed check
-    - name: get group replication plugin version
-      shell: |
-        mysql -u root -p"{{ dbrootpassword }}" \
-              -e "SELECT PLUGIN_VERSION FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME='group_replication' \G;" 2>/dev/null \
-        | awk '{ if (NR % 2 == 0) print $2}' \
-        | head -1
-      register: group_replication_plugin_version
-      tags: mysqld
-
-    # [Group Replication] plugin package download
-    - name: install group-replication-plugin
-      shell: |
-        curl -O http://downloads.mysql.com/snapshots/pb/mysql-group-replication-0.6.0-labs/mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
-        && tar xzvf mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
-        && mv mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit/lib64/mysql/plugin/group_replication.so /usr/lib64/mysql/plugin/
-      when: group_replication_plugin_version.stdout == ''
-      tags: mysqld-group-replication
-
-    # 設定ファイルの変更
-    - name: set my.cnf
-      template: src=my.cnf dest=/etc/my.cnf
-      register: configuration_file
-
-    # mysqld restart
-    - name: mysqld restart
-      service: name=mysqld state=restarted
-      when: configuration_file.changed
-      tags: mysqld-group-replication
 
     # [初回起動] 自動で割り振られたパスワードを取得
     - name: get root password
@@ -118,6 +86,65 @@
               --connect-expired-password
       when: root_password.changed and root_password.stdout != ""
       tags: mysqld
+
+    #
+    # プラグインのインストール
+    #
+
+    # [Group Replication] installed check
+    - name: get group replication plugin version
+      shell: |
+        mysql -u root -p"{{ dbrootpassword }}" \
+              -e "SELECT PLUGIN_VERSION FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME='group_replication' \G;" 2>/dev/null \
+        | awk '{ if (NR % 2 == 0) print $2}' \
+        | head -1
+      register: group_replication_plugin_version
+      tags: mysqld
+
+    # [Group Replication] plugin package download
+    - name: install group-replication-plugin
+      shell: |
+        curl -O http://downloads.mysql.com/snapshots/pb/mysql-group-replication-0.6.0-labs/mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
+        && tar xzvf mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
+        && mv mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit/lib64/mysql/plugin/group_replication.so /usr/lib64/mysql/plugin/
+      when: group_replication_plugin_version.stdout == ''
+      tags: mysqld-group-replication
+
+    #
+    # Group Replicationの設定
+    #
+
+    # check replication user
+    - name: check replication user
+      shell: |
+        mysql -u root -p"{{ dbrootpassword }}" \
+              -e "SELECT User FROM mysql.user WHERE User='rpl_user'" 2>/dev/null \
+        | awk '{ if (NR % 2 == 0) print $2}' \
+        | wc -l
+      register: replication_user_count
+      tags: mysqld
+    #- debug:
+    #    var: replication_user_count.stdout
+
+    # create replication user
+    - name: create replication user
+      shell: |
+        mysql -u root -p"{{ dbrootpassword }}" \
+              -e "GRANT REPLICATION SLAVE ON *.* TO rpl_user@'%' IDENTIFIED BY 'rpl_pass';" 2>/dev/null
+      when: replication_user_count.stdout == '0'
+      tags: mysqld-group-replication
+
+
+    # 設定ファイルの変更
+    - name: set my.cnf
+      template: src=my.cnf dest=/etc/my.cnf
+      register: configuration_file
+
+    # mysqld restart
+    - name: mysqld restart
+      service: name=mysqld state=restarted
+      when: configuration_file.changed
+      tags: mysqld-group-replication
 
     # # corosync
     # #   http://mysqlhighavailability.com/mysql-group-replication-a-small-corosync-guide/
@@ -162,26 +189,6 @@
     # - name: launch corosync
     #   service: name=corosync state=running enabled=yes
     #   tags: mysqld-group-replication
-
-    # [Group Replication] check replication user
-    - name: check replication user
-      shell: |
-        mysql -u root -p"{{ dbrootpassword }}" \
-              -e "SELECT User FROM mysql.user WHERE User='rpl_user'" 2>/dev/null \
-        | awk '{ if (NR % 2 == 0) print $2}' \
-        | wc -l
-      register: replication_user_count
-      tags: mysqld
-    #- debug:
-    #    var: replication_user_count.stdout
-
-    # [Group Replication] create replication user
-    - name: create replication user
-      shell: |
-        mysql -u root -p"{{ dbrootpassword }}" \
-              -e "GRANT REPLICATION SLAVE ON *.* TO rpl_user@'%' IDENTIFIED BY 'rpl_pass';" 2>/dev/null
-      when: replication_user_count.stdout == '0'
-      tags: mysqld-group-replication
 
     # [Group Replication] mysqld restart
     #- name: mysqld restart
