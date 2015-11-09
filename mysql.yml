@@ -45,12 +45,28 @@
         - mysql-server
       tags: mysqld
 
+    # [Plugin][Group Replication]
+    - name: confirm that group-replication plug-in is present
+      stat: path=/usr/lib64/mysql/plugin/group_replication.so
+      register: group_replication_plugin
+      tags: mysqld
+    #- debug: var=group_replication_plugin.stat.exists
+
+    # [Group Replication] plugin package download
+    - name: install group-replication-plugin
+      shell: |
+        curl -O http://downloads.mysql.com/snapshots/pb/mysql-group-replication-0.6.0-labs/mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
+        && tar xzvf mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
+        && mv mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit/lib64/mysql/plugin/group_replication.so /usr/lib64/mysql/plugin/
+      when: not group_replication_plugin.stat.exists
+      tags: mysqld-group-replication
+
     # 初回起動の判定として、ログファイルのチェックを実施
-    - name: check {{ logpath }}
+    - name: check mysqld.log
       stat: path={{ logpath }}
       register: f
       tags: mysqld
-    - debug: var=f.stat.size
+    #- debug: var=f.stat.size
 
     #
     # 初期化コマンド「mysql_install_db」はprovisioning toolで実行するのは
@@ -63,78 +79,6 @@
       service: name=mysqld state=running enabled=yes
       tags: mysqld
 
-
-    # [初回起動] 自動で割り振られたパスワードを取得
-    - name: get root password
-      shell: |
-        head /var/log/mysqld.log \
-        | grep 'A temporary password is generated for root@localhost' \
-        | awk -F' ' '{print $NF}'
-      register: root_password
-      when: f.stat.size == 0
-      tags: mysqld
-    #- debug:
-    #    var: root_password.stdout
-    #  when: root_password.changed
-    #  tags: mysqld
-
-    # [初回起動] パスワード変更
-    - name: change root password
-      shell: |
-        mysql -u root -p"{{ root_password.stdout }}" \
-              -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('{{ dbrootpassword }}')" \
-              --connect-expired-password
-      when: root_password.changed and root_password.stdout != ""
-      tags: mysqld
-
-    #
-    # プラグインのインストール
-    #
-
-    # [Group Replication] installed check
-    - name: get group replication plugin version
-      shell: |
-        mysql -u root -p"{{ dbrootpassword }}" \
-              -e "SELECT PLUGIN_VERSION FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME='group_replication' \G;" 2>/dev/null \
-        | awk '{ if (NR % 2 == 0) print $2}' \
-        | head -1
-      register: group_replication_plugin_version
-      tags: mysqld
-
-    # [Group Replication] plugin package download
-    - name: install group-replication-plugin
-      shell: |
-        curl -O http://downloads.mysql.com/snapshots/pb/mysql-group-replication-0.6.0-labs/mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
-        && tar xzvf mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit.tar.gz \
-        && mv mysql-group-replication-0.6.0-dmr-linux-el6-x86-64bit/lib64/mysql/plugin/group_replication.so /usr/lib64/mysql/plugin/
-      when: group_replication_plugin_version.stdout == ''
-      tags: mysqld-group-replication
-
-    #
-    # Group Replicationの設定
-    #
-
-    # check replication user
-    - name: check replication user
-      shell: |
-        mysql -u root -p"{{ dbrootpassword }}" \
-              -e "SELECT User FROM mysql.user WHERE User='rpl_user'" 2>/dev/null \
-        | awk '{ if (NR % 2 == 0) print $2}' \
-        | wc -l
-      register: replication_user_count
-      tags: mysqld
-    #- debug:
-    #    var: replication_user_count.stdout
-
-    # create replication user
-    - name: create replication user
-      shell: |
-        mysql -u root -p"{{ dbrootpassword }}" \
-              -e "GRANT REPLICATION SLAVE ON *.* TO rpl_user@'%' IDENTIFIED BY 'rpl_pass';" 2>/dev/null
-      when: replication_user_count.stdout == '0'
-      tags: mysqld-group-replication
-
-
     # 設定ファイルの変更
     - name: set my.cnf
       template: src=my.cnf dest=/etc/my.cnf
@@ -146,108 +90,49 @@
       when: configuration_file.changed
       tags: mysqld-group-replication
 
-    # # corosync
-    # #   http://mysqlhighavailability.com/mysql-group-replication-a-small-corosync-guide/
-    # # [Group Replication] corosyncインストール
-    # - name: install corosync
-    #   yum: name={{ item }} state=present
-    #   with_items:
-    #     - corosync
-    #     - corosynclib
-    #     - corosynclib-devel
-    #   tags: mysqld-group-replication
+    # [初回起動] 自動で割り振られたパスワードを取得
+    - name: get root password
+      shell: |
+        head /var/log/mysqld.log \
+        | grep 'A temporary password is generated for root@localhost' \
+        | awk -F' ' '{print $NF}'
+      register: root_init_password
+      when: f.stat.size == 0
+      tags: mysqld
+    #- debug:
+    #    var: root_init_password.stdout
+    #  when: root_init_password.changed
+    #  tags: mysqld
 
-    # - name: create /etc/corosync/uidgit.d/*.*
-    #   shell: |
-    #     echo -e "uidgid {\n  uid: {{ item }}\n  gid: {{ item }}\n}" \
-    #     > /etc/corosync/uidgid.d/{{ item }}.{{ item }}
-    #   with_items:
-    #     - root
-    #     - mysql
-    #   tags: mysqld-group-replication
-
-    # - name: create /etc/corosync/corosync.conf
-    #   template: src=corosync.conf dest=/etc/corosync/corosync.conf
-    #   tags: mysqld-group-replication
-
-    # #
-    # # [corosync-keygen over ssh]
-    # # while /bin/true; do \
-    # #   dd if=/dev/urandom of=/tmp/100 bs=1024 count=100000;\
-    # #   for i in {1..10}; do \
-    # #     cp /tmp/100 /tmp/tmp_$i_$RANDOM;\
-    # #   done;\
-    # #   rm -f /tmp/tmp_* /tmp/100;\
-    # # done & /usr/sbin/corosync-keygen
-    # #
-
-    # - name: create /etc/corosync/authkey
-    #   copy: src=authkey dest=/etc/corosync/authkey
-    #   tags: mysqld-group-replication
-
-    # # 起動＆サービス登録
-    # - name: launch corosync
-    #   service: name=corosync state=running enabled=yes
-    #   tags: mysqld-group-replication
-
-    # [Group Replication] mysqld restart
-    #- name: mysqld restart
-    #  service: name=mysqld state=restarted
-    #  tags: mysqld-group-replication
-
-    # [Group Replication] initialize setting
-    # - name: initialize settings
-    #   shell: |
-    #     mysql -u root -p"{{ dbrootpassword }}" \
-    #           -e "SET GLOBAL group_replication_group_name= '8a94f357-aab4-11df-86ab-c80aa9429562';" 2>/dev/null
-    #     mysql -u root -p"{{ dbrootpassword }}" \
-    #           -e "SET GLOBAL group_replication_recovery_user='rpl_user';" 2>/dev/null
-    #     mysql -u root -p"{{ dbrootpassword }}" \
-    #           -e "SET GLOBAL group_replication_recovery_password='rpl_pass';" 2>/dev/null
-    #     mysql -u root -p"{{ dbrootpassword }}" \
-    #           -e "SET GLOBAL group_replication_recovery_retry_count= 2;" 2>/dev/null
-    #     mysql -u root -p"{{ dbrootpassword }}" \
-    #           -e "SET GLOBAL group_replication_recovery_reconnect_interval= 120;" 2>/dev/null
-    #   when: group_replication_plugin_version.stdout == ''
-    #   tags: mysqld-group-replication
+    # [初回起動] パスワード変更
+    - name: change root password
+      shell: |
+        mysql -u root -p'{{ root_init_password.stdout }}' \
+              -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('{{ dbrootpassword }}')" \
+              --connect-expired-password
+      when: root_init_password.changed and root_init_password.stdout != ""
+      tags: mysqld
 
     #
-    # http://mysqlhighavailability.com/getting-started-with-mysql-group-replication/
-    #
-    #
-    # START GROUP_REPLICATION;
-    #
-    #   ERROR 3096 (HY000): The START GROUP_REPLICATION command failed as there was an error when initializing the group communication layer.
-
-
-    #
-    # ここから下は、適宜変更
+    # Group Replicationの設定
     #
 
-    # mysql_db モジュールを動かすためのツールを設定
-    # - name: install MySQL-python
-    #   yum: name={{ item }} state=present
-    #   with_items:
-    #     - MySQL-python
-    #   tags: mysqld
+    # check replication user
+    - name: check replication user
+      shell: |
+        mysql -u root -p'{{ dbrootpassword }}' \
+              -e "SELECT User FROM mysql.user WHERE User='rpl_user'" 2>/dev/null \
+        | awk '{ if (NR % 2 == 0) print $2}' \
+        | wc -l
+      register: replication_user_count
+      tags: mysqld
+    #- debug:
+    #    var: replication_user_count.stdout
 
-    # DB作成
-    # - name: create database
-    #   mysql_db:
-    #     name: "{{ dbname }}"
-    #     login_user: "root"
-    #     login_password: "{{ dbrootpassword }}"
-    #     state: present
-    #     encoding: utf8
-    #   tags: mysqld
-
-    # DBユーザ作成
-    # - name: create database user
-    #   mysql_user:
-    #     name: "{{ dbuser }}"
-    #     password: "{{ dbpassword }}"
-    #     login_user: "root"
-    #     login_password: "{{ dbrootpassword }}"
-    #     priv: "{{ dbname }}.*:ALL"
-    #     state: present
-    #   tags: mysqld
+    # create replication user
+    - name: create replication user
+      shell: |
+        mysql -u root -p'{{ dbrootpassword }}' \
+              -e "GRANT REPLICATION SLAVE ON *.* TO rpl_user@'%' IDENTIFIED BY 'rpl_pass';" 2>/dev/null
+      when: replication_user_count.stdout == '0'
+      tags: mysqld-group-replication
