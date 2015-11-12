@@ -7,8 +7,8 @@
     - dbuser: suzuki
     - dbpassword: suzuki
     - host_items:
-      - '10.11.22.101\tdb1.local.net'
-      - '10.11.22.102\tdb2.local.net'
+      - '10.11.22.101\tdb1.localnet'
+      - '10.11.22.102\tdb2.localnet'
   tasks:
 
     #
@@ -16,8 +16,8 @@
     #
     - name: change hostname
       shell: |
-        sed -i -e 's/\(HOSTNAME=\).*/\1db{{ ansible_eth1["ipv4"]["address"][-1:] }}.local.net/g' /etc/sysconfig/network
-        hostname db{{ ansible_eth1["ipv4"]["address"][-1:] }}.local.net
+        sed -i -e 's/\(HOSTNAME=\).*/\1db{{ ansible_eth1["ipv4"]["address"][-1:] }}.localnet/g' /etc/sysconfig/network
+        hostname db{{ ansible_eth1["ipv4"]["address"][-1:] }}.localnet
       tags: init
 
     #
