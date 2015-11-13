@@ -3,9 +3,6 @@
   vars:
     - logpath: /var/log/mysqld.log
     - dbrootpassword: root
-    - dbname: sample
-    - dbuser: suzuki
-    - dbpassword: suzuki
     - host_items:
       - '10.11.22.101\tdb1.localnet'
       - '10.11.22.102\tdb2.localnet'
